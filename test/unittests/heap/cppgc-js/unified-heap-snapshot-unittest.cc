@@ -105,7 +105,14 @@ struct EphemeronContainerBacking final
     return ephemeron_pairs_[index].value.Get();
   }
 
-  static void EmptyWeakCallback(const cppgc::LivenessBroker&, const void*) {}
+  static void CheckEntriesAreAlive(const cppgc::LivenessBroker& broker,
+                                   const void* data) {
+    const auto* backing = static_cast<const EphemeronContainerBacking*>(data);
+    for (const auto& ephemeron_pair : backing->ephemeron_pairs_) {
+      CHECK(broker.IsHeapObjectAlive(ephemeron_pair.key));
+      CHECK(broker.IsHeapObjectAlive(ephemeron_pair.value.Get()));
+    }
+  }
 
  private:
   void TraceStrongifiedEphemerons(cppgc::Visitor* visitor) const {
@@ -134,8 +141,8 @@ class EphemeronContainer : public cppgc::GarbageCollected<EphemeronContainer> {
 
   void Trace(cppgc::Visitor* visitor) const {
     visitor->TraceWeakContainer(backing_.Get(),
-                                EphemeronContainerBacking::EmptyWeakCallback,
-                                nullptr);
+                                EphemeronContainerBacking::CheckEntriesAreAlive,
+                                backing_.Get());
   }
 
   EphemeronContainerBacking* backing() const { return backing_.Get(); }
