@@ -214,7 +214,7 @@ class HeapEntryVerifier {
 
 HeapGraphEdge::HeapGraphEdge(Type type, const char* name, HeapEntry* from,
                              HeapEntry* to)
-    : bit_field_(TypeField::encode(type) |
+    : bit_field_(TypeField::encode(type) | IsValueField::encode(false) |
                  FromIndexField::encode(from->index())),
       to_entry_(to),
       name_(name) {
@@ -224,9 +224,28 @@ HeapGraphEdge::HeapGraphEdge(Type type, const char* name, HeapEntry* from,
 
 HeapGraphEdge::HeapGraphEdge(Type type, int index, HeapEntry* from,
                              HeapEntry* to)
-    : bit_field_(TypeField::encode(type) |
+    : bit_field_(TypeField::encode(type) | IsValueField::encode(false) |
                  FromIndexField::encode(from->index())),
       to_entry_(to),
+      index_(index) {
+  DCHECK(type == kElement || type == kHidden);
+}
+
+HeapGraphEdge::HeapGraphEdge(Type type, const char* name, HeapEntry* from,
+                             HeapSnapshotValue* to)
+    : bit_field_(TypeField::encode(type) | IsValueField::encode(true) |
+                 FromIndexField::encode(from->index())),
+      to_value_(to),
+      name_(name) {
+  DCHECK(type == kContextVariable || type == kProperty || type == kInternal ||
+         type == kShortcut || type == kWeak);
+}
+
+HeapGraphEdge::HeapGraphEdge(Type type, int index, HeapEntry* from,
+                             HeapSnapshotValue* to)
+    : bit_field_(TypeField::encode(type) | IsValueField::encode(true) |
+                 FromIndexField::encode(from->index())),
+      to_value_(to),
       index_(index) {
   DCHECK(type == kElement || type == kHidden);
 }
@@ -235,15 +254,47 @@ HeapEntry* HeapGraphEdge::from() const {
   return &snapshot()->entries()[from_index()];
 }
 
-Isolate* HeapGraphEdge::isolate() const { return to_entry_->isolate(); }
+Isolate* HeapGraphEdge::isolate() const {
+  return snapshot()->profiler()->isolate();
+}
 
-HeapSnapshot* HeapGraphEdge::snapshot() const { return to_entry_->snapshot(); }
+HeapSnapshot* HeapGraphEdge::snapshot() const {
+  return is_value() ? to_value_->snapshot() : to_entry_->snapshot();
+}
+
+HeapSnapshotValue::HeapSnapshotValue(HeapSnapshot* snapshot, int index,
+                                     int value)
+    : snapshot_(snapshot), index_(index), type_(kInt), int_value_(value) {}
+
+HeapSnapshotValue::HeapSnapshotValue(HeapSnapshot* snapshot, int index,
+                                     Type type, int value)
+    : snapshot_(snapshot), index_(index), type_(type), int_value_(value) {
+  DCHECK_EQ(kSmi, type);
+}
+
+HeapSnapshotValue::HeapSnapshotValue(HeapSnapshot* snapshot, int index,
+                                     bool value)
+    : snapshot_(snapshot), index_(index), type_(kBool), bool_value_(value) {}
+
+HeapSnapshotValue::HeapSnapshotValue(HeapSnapshot* snapshot, int index,
+                                     double value)
+    : snapshot_(snapshot),
+      index_(index),
+      type_(kDouble),
+      double_value_(value) {}
+
+HeapSnapshotValue::HeapSnapshotValue(HeapSnapshot* snapshot, int index,
+                                     const char* value)
+    : snapshot_(snapshot),
+      index_(index),
+      type_(kString),
+      string_value_(value) {}
 
 HeapEntry::HeapEntry(HeapSnapshot* snapshot, int index, Type type,
                      const char* name, SnapshotObjectId id, size_t self_size,
                      unsigned trace_node_id)
     : type_and_index_(TypeField::encode(static_cast<unsigned>(type)) |
-                       IndexField::encode(index)),
+                      IndexField::encode(index)),
       children_count_(0),
 #ifdef V8_TARGET_ARCH_64_BIT
       self_size_and_detachedness_(SelfSizeField::encode(self_size)),
@@ -353,6 +404,19 @@ void HeapEntry::SetNamedReference(HeapGraphEdge::Type type, const char* name,
   VerifyReference(type, entry, generator, verification);
 }
 
+void HeapEntry::SetNamedValueReference(HeapGraphEdge::Type type,
+                                       const char* name,
+                                       HeapSnapshotValue* value) {
+  ++children_count_;
+  snapshot_->edges().emplace_back(type, name, this, value);
+}
+
+void HeapEntry::SetIndexedValueReference(HeapGraphEdge::Type type, int index,
+                                         HeapSnapshotValue* value) {
+  ++children_count_;
+  snapshot_->edges().emplace_back(type, index, this, value);
+}
+
 void HeapEntry::SetIndexedReference(HeapGraphEdge::Type type, int index,
                                     HeapEntry* entry,
                                     HeapSnapshotGenerator* generator,
@@ -431,6 +495,29 @@ void HeapEntry::Print(const char* prefix, const char* edge_name, int max_depth,
       default:
         SNPrintF(index, "!!! unknown edge type: %d ", edge.type());
     }
+    if (edge.is_value()) {
+      HeapSnapshotValue* value = edge.value();
+      base::OS::Print("%*c %s%s: /value/ ", indent + 2, ' ', edge_prefix,
+                      edge_name);
+      switch (value->type()) {
+        case HeapSnapshotValue::kInt:
+          base::OS::Print("%d\n", value->int_value());
+          break;
+        case HeapSnapshotValue::kBool:
+          base::OS::Print("%s\n", value->bool_value() ? "true" : "false");
+          break;
+        case HeapSnapshotValue::kDouble:
+          base::OS::Print("%g\n", value->double_value());
+          break;
+        case HeapSnapshotValue::kString:
+          base::OS::Print("\"%s\"\n", value->string_value());
+          break;
+        case HeapSnapshotValue::kSmi:
+          base::OS::Print("%d\n", value->smi_value());
+          break;
+      }
+      continue;
+    }
     edge.to()->Print(edge_prefix, edge_name, max_depth, indent + 2);
   }
 }
@@ -474,8 +561,7 @@ const char* HeapEntry::TypeAsString() const {
 
 HeapSnapshot::HeapSnapshot(HeapProfiler* profiler,
                            v8::HeapProfiler::NumericsMode numerics_mode)
-    : profiler_(profiler),
-      numerics_mode_(numerics_mode) {
+    : profiler_(profiler), numerics_mode_(numerics_mode) {
   // It is very important to keep objects that form a heap snapshot
   // as small as possible. Check assumptions about data structure sizes.
   static_assert(kSystemPointerSize != 4 || sizeof(HeapGraphEdge) == 12);
@@ -536,6 +622,37 @@ HeapEntry* HeapSnapshot::AddEntry(HeapEntry::Type type, const char* name,
   entries_.emplace_back(this, static_cast<int>(entries_.size()), type, name, id,
                         size, trace_node_id);
   return &entries_.back();
+}
+
+HeapSnapshotValue* HeapSnapshot::AddValue(int value) {
+  DCHECK(!is_complete());
+  values_.emplace_back(this, static_cast<int>(values_.size()), value);
+  return &values_.back();
+}
+
+HeapSnapshotValue* HeapSnapshot::AddValue(bool value) {
+  DCHECK(!is_complete());
+  values_.emplace_back(this, static_cast<int>(values_.size()), value);
+  return &values_.back();
+}
+
+HeapSnapshotValue* HeapSnapshot::AddValue(double value) {
+  DCHECK(!is_complete());
+  values_.emplace_back(this, static_cast<int>(values_.size()), value);
+  return &values_.back();
+}
+
+HeapSnapshotValue* HeapSnapshot::AddValue(const char* value) {
+  DCHECK(!is_complete());
+  values_.emplace_back(this, static_cast<int>(values_.size()), value);
+  return &values_.back();
+}
+
+HeapSnapshotValue* HeapSnapshot::AddSmiValue(int value) {
+  DCHECK(!is_complete());
+  values_.emplace_back(this, static_cast<int>(values_.size()),
+                       HeapSnapshotValue::kSmi, value);
+  return &values_.back();
 }
 
 void HeapSnapshot::AddScriptLineEnds(int script_id,
@@ -925,16 +1042,6 @@ V8HeapExplorer::V8HeapExplorer(HeapSnapshot* snapshot,
 HeapEntry* V8HeapExplorer::AllocateEntry(HeapThing ptr) {
   return AddEntry(
       Cast<HeapObject>(Tagged<Object>(reinterpret_cast<Address>(ptr))));
-}
-
-HeapEntry* V8HeapExplorer::AllocateEntry(Tagged<Smi> smi) {
-  SnapshotObjectId id = heap_object_map_->get_next_id();
-  HeapEntry* entry =
-      snapshot_->AddEntry(HeapEntry::kHeapNumber, "smi number", id, 0, 0);
-  // XXX: Smis do not appear in CombinedHeapObjectIterator, so we need to
-  // extract the references here
-  ExtractNumberReference(entry, smi);
-  return entry;
 }
 
 Tagged<JSFunction> V8HeapExplorer::GetLocationFunction(
@@ -1665,7 +1772,6 @@ class ExternalDataEntryAllocator : public HeapEntriesAllocator {
     return explorer_->AddEntry(reinterpret_cast<Address>(ptr),
                                HeapEntry::kNative, name_, size_);
   }
-  HeapEntry* AllocateEntry(Tagged<Smi> smi) override { UNREACHABLE(); }
 
  private:
   size_t size_;
@@ -2269,24 +2375,21 @@ void V8HeapExplorer::ExtractNumberReference(HeapEntry* entry,
   char arr[32];
   base::Vector<char> buffer = base::ArrayVector(arr);
 
-  std::string_view string;
+  HeapSnapshotValue* value;
   if (IsSmi(number)) {
     int int_value = Smi::ToInt(number);
-    string = IntToStringView(int_value, buffer);
+    value = generator_->FindOrCreateSmiValue(int_value);
   } else {
     double double_value = Cast<HeapNumber>(number)->value();
-    string = DoubleToStringView(double_value, buffer);
+    std::string_view string = DoubleToStringView(double_value, buffer);
+
+    // GetCopy() requires a null-terminated C-String, as the underlying hash map
+    // uses strcmp.
+    const char* name = names_->GetCopy(std::string(string).c_str());
+    value = generator_->FindOrCreateDoubleValue(double_value, name);
   }
 
-  // GetCopy() requires a null-terminated C-String, as the underlying hash map
-  // uses strcmp.
-  const char* name = names_->GetCopy(std::string(string).c_str());
-
-  SnapshotObjectId id = heap_object_map_->get_next_id();
-  HeapEntry* child_entry =
-      snapshot_->AddEntry(HeapEntry::kString, name, id, 0, 0);
-  entry->SetNamedReference(HeapGraphEdge::kInternal, "value", child_entry,
-                           generator_);
+  entry->SetNamedValueReference(HeapGraphEdge::kInternal, "value", value);
 }
 
 void V8HeapExplorer::ExtractBytecodeArrayReferences(
@@ -2551,11 +2654,9 @@ void V8HeapExplorer::ExtractWasmStructReferences(Tagged<WasmStruct> obj,
         if (!snapshot_->capture_numeric_value()) continue;
         std::string value_string = obj->GetFieldValue(i).to_string();
         const char* value_name = names_->GetCopy(value_string.c_str());
-        SnapshotObjectId id = heap_object_map_->get_next_id();
-        HeapEntry* child_entry =
-            snapshot_->AddEntry(HeapEntry::kString, value_name, id, 0, 0);
-        entry->SetNamedReference(HeapGraphEdge::kInternal, field_name,
-                                 child_entry, generator_);
+        entry->SetNamedValueReference(
+            HeapGraphEdge::kProperty, field_name,
+            generator_->FindOrCreateStringValue(value_name));
         break;
       }
       case wasm::kRef:
@@ -2566,9 +2667,15 @@ void V8HeapExplorer::ExtractWasmStructReferences(Tagged<WasmStruct> obj,
         // arrays, see below), but for now we always include them, in the hope
         // that they might help identify opportunities for struct size
         // reductions.
-        HeapEntry* value_entry = GetEntry(value);
-        entry->SetNamedReference(HeapGraphEdge::kProperty, field_name,
-                                 value_entry, generator_);
+        if (HeapSnapshotValue* snapshot_value = GetSnapshotValue(value)) {
+          entry->SetNamedValueReference(HeapGraphEdge::kProperty, field_name,
+                                        snapshot_value);
+        } else {
+          HeapEntry* value_entry = GetEntry(value);
+          if (value_entry == nullptr) break;
+          entry->SetNamedReference(HeapGraphEdge::kProperty, field_name,
+                                   value_entry, generator_);
+        }
         MarkVisitedField(WasmStruct::kHeaderSize + field_offset);
         break;
       }
@@ -2667,10 +2774,12 @@ HeapEntry* V8HeapExplorer::GetEntry(Tagged<Object> obj) {
   }
 
   DCHECK(IsSmi(obj));
-  if (!snapshot_->capture_numeric_value()) {
-    return nullptr;
-  }
-  return generator_->FindOrAddEntry(Cast<Smi>(obj), this);
+  return nullptr;
+}
+
+HeapSnapshotValue* V8HeapExplorer::GetSnapshotValue(Tagged<Object> object) {
+  if (!snapshot_->capture_numeric_value() || !IsSmi(object)) return nullptr;
+  return generator_->FindOrCreateSmiValue(Smi::ToInt(object));
 }
 
 class RootsReferencesExtractor : public RootVisitor {
@@ -2847,6 +2956,13 @@ void V8HeapExplorer::SetContextReference(HeapEntry* parent_entry,
                                          Tagged<String> reference_name,
                                          Tagged<Object> child_obj,
                                          int field_offset) {
+  if (HeapSnapshotValue* value = GetSnapshotValue(child_obj)) {
+    parent_entry->SetNamedValueReference(HeapGraphEdge::kContextVariable,
+                                         names_->GetName(reference_name),
+                                         value);
+    MarkVisitedField(field_offset);
+    return;
+  }
   HeapEntry* child_entry = GetEntry(child_obj);
   if (child_entry == nullptr) return;
   parent_entry->SetNamedReference(HeapGraphEdge::kContextVariable,
@@ -2874,6 +2990,11 @@ void V8HeapExplorer::SetShortcutReference(HeapEntry* parent_entry,
 
 void V8HeapExplorer::SetElementReference(HeapEntry* parent_entry, int index,
                                          Tagged<Object> child_obj) {
+  if (HeapSnapshotValue* value = GetSnapshotValue(child_obj)) {
+    parent_entry->SetIndexedValueReference(HeapGraphEdge::kElement, index,
+                                           value);
+    return;
+  }
   HeapEntry* child_entry = GetEntry(child_obj);
   if (child_entry == nullptr) return;
   parent_entry->SetIndexedReference(HeapGraphEdge::kElement, index, child_entry,
@@ -2883,26 +3004,23 @@ void V8HeapExplorer::SetElementReference(HeapEntry* parent_entry, int index,
 void V8HeapExplorer::AddIntEdge(HeapEntry* parent_entry,
                                 HeapGraphEdge::Type type,
                                 const char* reference_name, int value) {
-  parent_entry->SetNamedReference(type, reference_name,
-                                  generator_->FindOrCreateIntEntry(value),
-                                  generator_);
+  parent_entry->SetNamedValueReference(type, reference_name,
+                                       generator_->FindOrCreateIntValue(value));
 }
 
 void V8HeapExplorer::AddBoolEdge(HeapEntry* parent_entry,
                                  HeapGraphEdge::Type type,
                                  const char* reference_name, bool value) {
-  parent_entry->SetNamedReference(type, reference_name,
-                                  generator_->FindOrCreateBoolEntry(value),
-                                  generator_);
+  parent_entry->SetNamedValueReference(
+      type, reference_name, generator_->FindOrCreateBoolValue(value));
 }
 
 void V8HeapExplorer::AddStringEdge(HeapEntry* parent_entry,
                                    HeapGraphEdge::Type type,
                                    const char* reference_name,
                                    const char* value) {
-  parent_entry->SetNamedReference(type, reference_name,
-                                  generator_->FindOrCreateStringEntry(value),
-                                  generator_);
+  parent_entry->SetNamedValueReference(
+      type, reference_name, generator_->FindOrCreateStringValue(value));
 }
 
 void V8HeapExplorer::SetInternalReference(HeapEntry* parent_entry,
@@ -2998,8 +3116,6 @@ void V8HeapExplorer::SetPropertyReference(HeapEntry* parent_entry,
                                           Tagged<Object> child_obj,
                                           const char* name_format_string,
                                           int field_offset) {
-  HeapEntry* child_entry = GetEntry(child_obj);
-  if (child_entry == nullptr) return;
   HeapGraphEdge::Type type =
       IsSymbol(reference_name) || Cast<String>(reference_name)->length() > 0
           ? HeapGraphEdge::kProperty
@@ -3010,6 +3126,14 @@ void V8HeapExplorer::SetPropertyReference(HeapEntry* parent_entry,
                                Cast<String>(reference_name)->ToCString().get())
                          : names_->GetName(reference_name);
 
+  if (HeapSnapshotValue* value = GetSnapshotValue(child_obj)) {
+    parent_entry->SetNamedValueReference(type, name, value);
+    MarkVisitedField(field_offset);
+    return;
+  }
+
+  HeapEntry* child_entry = GetEntry(child_obj);
+  if (child_entry == nullptr) return;
   parent_entry->SetNamedReference(type, name, child_entry, generator_);
   MarkVisitedField(field_offset);
 }
@@ -3270,7 +3394,6 @@ class EmbedderGraphEntriesAllocator : public HeapEntriesAllocator {
         names_(snapshot_->profiler()->names()),
         heap_object_map_(snapshot_->profiler()->heap_object_map()) {}
   HeapEntry* AllocateEntry(HeapThing ptr) override;
-  HeapEntry* AllocateEntry(Tagged<Smi> smi) override;
 
  private:
   HeapSnapshot* snapshot_;
@@ -3345,11 +3468,6 @@ HeapEntry* EmbedderGraphEntriesAllocator::AllocateEntry(HeapThing ptr) {
                                          static_cast<int>(size), 0);
   heap_entry->set_detachedness(node->GetDetachedness());
   return heap_entry;
-}
-
-HeapEntry* EmbedderGraphEntriesAllocator::AllocateEntry(Tagged<Smi> smi) {
-  DCHECK(false);
-  return nullptr;
 }
 
 NativeObjectsExplorer::NativeObjectsExplorer(
@@ -3474,40 +3592,35 @@ HeapSnapshotGenerator::HeapSnapshotGenerator(
       heap_(heap),
       stack_state_(stack_state) {}
 
-HeapEntry* HeapSnapshotGenerator::FindOrCreateIntEntry(int value) {
-  HeapEntry*& entry = int_entries_[value];
-  if (!entry) {
-    HeapEntry* value_entry = snapshot_->AddEntry(
-        HeapEntry::kString, names_->GetFormatted("%d", value),
-        heap_object_map_->get_next_id(), 0, 0);
-    entry = snapshot_->AddEntry(HeapEntry::kHeapNumber, "int",
-                                heap_object_map_->get_next_id(), 0, 0);
-    entry->SetNamedReference(HeapGraphEdge::kInternal, "value", value_entry,
-                             this);
-  }
+HeapSnapshotValue* HeapSnapshotGenerator::FindOrCreateIntValue(int value) {
+  HeapSnapshotValue*& entry = int_values_[value];
+  if (!entry) entry = snapshot_->AddValue(value);
   return entry;
 }
 
-HeapEntry* HeapSnapshotGenerator::FindOrCreateBoolEntry(bool value) {
-  HeapEntry*& entry = bool_entries_[value ? 1 : 0];
-  if (!entry) {
-    HeapEntry* value_entry =
-        snapshot_->AddEntry(HeapEntry::kString, value ? "true" : "false",
-                            heap_object_map_->get_next_id(), 0, 0);
-    entry = snapshot_->AddEntry(HeapEntry::kHeapNumber, "bool",
-                                heap_object_map_->get_next_id(), 0, 0);
-    entry->SetNamedReference(HeapGraphEdge::kInternal, "value", value_entry,
-                             this);
-  }
+HeapSnapshotValue* HeapSnapshotGenerator::FindOrCreateBoolValue(bool value) {
+  HeapSnapshotValue*& entry = bool_values_[value ? 1 : 0];
+  if (!entry) entry = snapshot_->AddValue(value);
   return entry;
 }
 
-HeapEntry* HeapSnapshotGenerator::FindOrCreateStringEntry(const char* string) {
-  HeapEntry*& entry = string_entries_[string];
-  if (!entry) {
-    entry = snapshot_->AddEntry(HeapEntry::kString, names_->GetCopy(string),
-                                heap_object_map_->get_next_id(), 0, 0);
-  }
+HeapSnapshotValue* HeapSnapshotGenerator::FindOrCreateDoubleValue(
+    double value, const char* string) {
+  HeapSnapshotValue*& entry = double_values_[string];
+  if (!entry) entry = snapshot_->AddValue(value);
+  return entry;
+}
+
+HeapSnapshotValue* HeapSnapshotGenerator::FindOrCreateStringValue(
+    const char* string) {
+  HeapSnapshotValue*& entry = string_values_[string];
+  if (!entry) entry = snapshot_->AddValue(names_->GetCopy(string));
+  return entry;
+}
+
+HeapSnapshotValue* HeapSnapshotGenerator::FindOrCreateSmiValue(int value) {
+  HeapSnapshotValue*& entry = smi_values_[value];
+  if (!entry) entry = snapshot_->AddSmiValue(value);
   return entry;
 }
 
@@ -3656,6 +3769,7 @@ int HeapSnapshotJSONSerializer::to_node_index(int entry_index) {
 // type, name, id, self_size, edge_count, trace_node_id, detachedness.
 const int HeapSnapshotJSONSerializer::kNodeFieldsCountWithTraceNodeId = 7;
 const int HeapSnapshotJSONSerializer::kNodeFieldsCountWithoutTraceNodeId = 6;
+const int HeapSnapshotJSONSerializer::kValueFieldsCount = 2;
 
 void HeapSnapshotJSONSerializer::Serialize(v8::OutputStream* stream) {
   v8::base::ElapsedTimer timer;
@@ -3694,7 +3808,10 @@ void HeapSnapshotJSONSerializer::SerializeImpl() {
   SerializeEdges();
   if (writer_->aborted()) return;
   writer_->AddString("],\n");
-
+  writer_->AddString("\"values\":[");
+  SerializeValues();
+  if (writer_->aborted()) return;
+  writer_->AddString("],\n");
   writer_->AddString("\"trace_function_infos\":[");
   SerializeTraceNodeInfos();
   if (writer_->aborted()) return;
@@ -3731,12 +3848,24 @@ int HeapSnapshotJSONSerializer::GetStringId(const char* s) {
   return static_cast<int>(reinterpret_cast<intptr_t>(cache_entry->value));
 }
 
+int HeapSnapshotJSONSerializer::to_value_index(const HeapSnapshotValue* value) {
+  return value->index() * kValueFieldsCount;
+}
+
+int HeapSnapshotJSONSerializer::EncodeValueTarget(
+    const HeapSnapshotValue* value) {
+  return to_node_index(static_cast<int>(snapshot_->entries().size())) +
+         to_value_index(value);
+}
+
 void HeapSnapshotJSONSerializer::SerializeEdge(HeapGraphEdge* edge,
                                                bool first_edge) {
   int edge_name_or_index = edge->type() == HeapGraphEdge::kElement ||
                                    edge->type() == HeapGraphEdge::kHidden
                                ? edge->index()
                                : GetStringId(edge->name());
+  int target_index = edge->is_value() ? EncodeValueTarget(edge->value())
+                                      : to_node_index(edge->to());
   if (!first_edge) {
     writer_->AddCharacter(',');
   }
@@ -3744,7 +3873,7 @@ void HeapSnapshotJSONSerializer::SerializeEdge(HeapGraphEdge* edge,
   writer_->AddCharacter(',');
   writer_->AddNumber(edge_name_or_index);
   writer_->AddCharacter(',');
-  writer_->AddNumber(to_node_index(edge->to()));
+  writer_->AddNumber(target_index);
 }
 
 void HeapSnapshotJSONSerializer::SerializeEdges() {
@@ -3784,6 +3913,51 @@ void HeapSnapshotJSONSerializer::SerializeNodes() {
   const std::deque<HeapEntry>& entries = snapshot_->entries();
   for (const HeapEntry& entry : entries) {
     SerializeNode(&entry);
+    if (writer_->aborted()) return;
+  }
+}
+
+void HeapSnapshotJSONSerializer::SerializeValue(
+    const HeapSnapshotValue* value) {
+  if (to_value_index(value) != 0) {
+    writer_->AddCharacter(',');
+  }
+  writer_->AddNumber(static_cast<int>(value->type()));
+  writer_->AddCharacter(',');
+  switch (value->type()) {
+    case HeapSnapshotValue::kInt:
+      writer_->AddCharacter('\"');
+      writer_->AddNumber(value->int_value());
+      writer_->AddCharacter('\"');
+      break;
+    case HeapSnapshotValue::kBool:
+      writer_->AddString(value->bool_value() ? "\"true\"" : "\"false\"");
+      break;
+    case HeapSnapshotValue::kDouble: {
+      char arr[32];
+      std::string_view string =
+          DoubleToStringView(value->double_value(), base::ArrayVector(arr));
+      std::string serialized_value(string);
+      writer_->AddCharacter('\"');
+      writer_->AddString(serialized_value.c_str());
+      writer_->AddCharacter('\"');
+      break;
+    }
+    case HeapSnapshotValue::kString:
+      writer_->AddJsonEscapedString(
+          reinterpret_cast<const unsigned char*>(value->string_value()));
+      break;
+    case HeapSnapshotValue::kSmi:
+      writer_->AddCharacter('\"');
+      writer_->AddNumber(value->smi_value());
+      writer_->AddCharacter('\"');
+      break;
+  }
+}
+
+void HeapSnapshotJSONSerializer::SerializeValues() {
+  for (const HeapSnapshotValue& value : snapshot_->values()) {
+    SerializeValue(&value);
     if (writer_->aborted()) return;
   }
 }
@@ -3846,7 +4020,18 @@ void HeapSnapshotJSONSerializer::SerializeSnapshot() {
             JSON_S("shortcut") ","
             JSON_S("weak")) ","
         JSON_S("string_or_number") ","
-        JSON_S("node")) ","
+        JSON_S("node_or_value")) ","
+    JSON_S("value_fields") ":" JSON_A(
+        JSON_S("type") ","
+        JSON_S("value")) ","
+    JSON_S("value_types") ":" JSON_A(
+        JSON_A(
+            JSON_S("int") ","
+            JSON_S("bool") ","
+            JSON_S("double") ","
+            JSON_S("string") ","
+            JSON_S("smi")) ","
+        JSON_S("string")) ","
     JSON_S("trace_function_info_fields") ":" JSON_A(
         JSON_S("function_id") ","
         JSON_S("name") ","
@@ -3877,6 +4062,8 @@ void HeapSnapshotJSONSerializer::SerializeSnapshot() {
   writer_->AddNumber(snapshot_->entries().size());
   writer_->AddString(",\"edge_count\":");
   writer_->AddNumber(snapshot_->edges().size());
+  writer_->AddString(",\"value_count\":");
+  writer_->AddNumber(snapshot_->values().size());
   writer_->AddString(",\"trace_function_count\":");
   writer_->AddNumber(trace_function_count_);
   writer_->AddString(",\"extra_native_bytes\":");

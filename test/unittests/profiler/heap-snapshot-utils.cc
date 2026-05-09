@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #include "src/execution/isolate.h"
 #include "src/heap/heap.h"
@@ -38,6 +39,7 @@ const HeapGraphEdge* FindFirstEdgeTo(const HeapEntry& from,
                                      const HeapEntry& to) {
   for (int i = 0; i < from.children_count(); ++i) {
     const HeapGraphEdge* edge = from.child(i);
+    if (edge->is_value()) continue;
     if (edge->to() == &to) return edge;
   }
   return nullptr;
@@ -56,31 +58,30 @@ bool HasNamedEdge(const HeapEntry& entry, const char* name) {
 
 std::optional<int> GetIntEdge(const HeapEntry* node, const char* name) {
   const HeapGraphEdge* edge = GetNamedEdge(*node, name);
-  if (!edge || edge->to()->type() != HeapEntry::kHeapNumber ||
-      strcmp("int", edge->to()->name()) != 0) {
+  if (!edge || !edge->is_value() ||
+      edge->value()->type() != HeapSnapshotValue::kInt) {
     return std::nullopt;
   }
-  const HeapGraphEdge* value_edge = GetNamedEdge(*edge->to(), "value");
-  if (!value_edge || value_edge->to()->type() != HeapEntry::kString) {
-    return std::nullopt;
-  }
-  return std::stoi(value_edge->to()->name());
+  return edge->value()->int_value();
 }
 
 std::optional<bool> GetBoolEdge(const HeapEntry* node, const char* name) {
   const HeapGraphEdge* edge = GetNamedEdge(*node, name);
-  if (!edge || edge->to()->type() != HeapEntry::kHeapNumber ||
-      strcmp("bool", edge->to()->name()) != 0) {
+  if (!edge || !edge->is_value() ||
+      edge->value()->type() != HeapSnapshotValue::kBool) {
     return std::nullopt;
   }
-  const HeapGraphEdge* value_edge = GetNamedEdge(*edge->to(), "value");
-  if (!value_edge || value_edge->to()->type() != HeapEntry::kString) {
+  return edge->value()->bool_value();
+}
+
+std::optional<std::string_view> GetStringEdge(const HeapEntry* node,
+                                              const char* name) {
+  const HeapGraphEdge* edge = GetNamedEdge(*node, name);
+  if (!edge || !edge->is_value() ||
+      edge->value()->type() != HeapSnapshotValue::kString) {
     return std::nullopt;
   }
-  const char* value_name = value_edge->to()->name();
-  if (strcmp(value_name, "true") == 0) return true;
-  if (strcmp(value_name, "false") == 0) return false;
-  return std::nullopt;
+  return edge->value()->string_value();
 }
 
 const HeapEntry* GetEntryFor(Isolate* isolate, HeapSnapshot* snapshot,

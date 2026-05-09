@@ -539,10 +539,7 @@ void RegisterExtension(std::unique_ptr<Extension> extension) {
 
 Extension::Extension(const char* name, const char* source, int dep_count,
                      const char** deps, int source_length)
-    : name_(name),
-      dep_count_(dep_count),
-      deps_(deps),
-      auto_enable_(false) {
+    : name_(name), dep_count_(dep_count), deps_(deps), auto_enable_(false) {
   CHECK_IMPLIES(source == nullptr, source_length <= 0);
   std::string_view source_view;
   if (source) {
@@ -11748,6 +11745,11 @@ static i::HeapGraphEdge* ToInternal(const HeapGraphEdge* edge) {
       reinterpret_cast<const i::HeapGraphEdge*>(edge));
 }
 
+static i::HeapSnapshotValue* ToInternal(const HeapSnapshotValue* value) {
+  return const_cast<i::HeapSnapshotValue*>(
+      reinterpret_cast<const i::HeapSnapshotValue*>(value));
+}
+
 HeapGraphEdge::Type HeapGraphEdge::GetType() const {
   return static_cast<HeapGraphEdge::Type>(ToInternal(this)->type());
 }
@@ -11778,9 +11780,39 @@ const HeapGraphNode* HeapGraphEdge::GetFromNode() const {
 }
 
 const HeapGraphNode* HeapGraphEdge::GetToNode() const {
+  if (ToInternal(this)->is_value()) return nullptr;
   const i::HeapEntry* to = ToInternal(this)->to();
   return reinterpret_cast<const HeapGraphNode*>(to);
 }
+
+const HeapSnapshotValue* HeapGraphEdge::GetValue() const {
+  if (!ToInternal(this)->is_value()) return nullptr;
+  const i::HeapSnapshotValue* value = ToInternal(this)->value();
+  return reinterpret_cast<const HeapSnapshotValue*>(value);
+}
+
+HeapSnapshotValue::Type HeapSnapshotValue::GetType() const {
+  return static_cast<HeapSnapshotValue::Type>(ToInternal(this)->type());
+}
+
+int HeapSnapshotValue::GetInt() const { return ToInternal(this)->int_value(); }
+
+bool HeapSnapshotValue::GetBool() const {
+  return ToInternal(this)->bool_value();
+}
+
+double HeapSnapshotValue::GetDouble() const {
+  return ToInternal(this)->double_value();
+}
+
+Local<String> HeapSnapshotValue::GetString() const {
+  const i::HeapSnapshotValue* value = ToInternal(this);
+  i::Isolate* i_isolate = value->snapshot()->profiler()->isolate();
+  return ToApiHandle<String>(
+      i_isolate->factory()->InternalizeUtf8String(value->string_value()));
+}
+
+int HeapSnapshotValue::GetSmi() const { return ToInternal(this)->smi_value(); }
 
 static i::HeapEntry* ToInternal(const HeapGraphNode* entry) {
   return const_cast<i::HeapEntry*>(

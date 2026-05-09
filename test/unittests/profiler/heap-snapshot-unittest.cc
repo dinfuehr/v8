@@ -4,6 +4,9 @@
 
 #include <json/json.h>
 
+#include <string>
+#include <string_view>
+
 #include "src/profiler/heap-profiler.h"
 #include "src/profiler/heap-snapshot-generator.h"
 #include "test/unittests/profiler/heap-snapshot-utils.h"
@@ -22,8 +25,9 @@ class WithHeapSnapshot : public TMixin {
   }
 
   const Json::Value TakeHeapSnapshotJson() {
+    v8::HeapProfiler::HeapSnapshotOptions options =
+        HeapProfiler::GetDefaultHeapSnapshotOptionsForTestingUsage();
     HeapProfiler* heap_profiler = TMixin::i_isolate()->heap()->heap_profiler();
-    v8::HeapProfiler::HeapSnapshotOptions options;
     std::string raw_json = heap_profiler->TakeSnapshotToString(options);
 
     Json::Value root;
@@ -40,12 +44,272 @@ class WithHeapSnapshot : public TMixin {
 
 using HeapSnapshotTest = WithHeapSnapshot<TestWithContext>;
 
+namespace {
+
+int FindJsonStringIndex(const Json::Value& array, const char* value) {
+  for (Json::ArrayIndex i = 0; i < array.size(); ++i) {
+    if (array[i].asString() == value) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+std::string ToString(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+  v8::String::Utf8Value utf8(isolate, value);
+  return *utf8;
+}
+
+std::string ToString(v8::Isolate* isolate, v8::Local<v8::String> value) {
+  v8::String::Utf8Value utf8(isolate, value);
+  return *utf8;
+}
+
+const v8::HeapGraphEdge* GetPublicEdgeByName(v8::Isolate* isolate,
+                                             const v8::HeapGraphNode* node,
+                                             v8::HeapGraphEdge::Type type,
+                                             const char* name) {
+  for (int i = 0; i < node->GetChildrenCount(); ++i) {
+    const v8::HeapGraphEdge* edge = node->GetChild(i);
+    if (edge->GetType() == type && ToString(isolate, edge->GetName()) == name) {
+      return edge;
+    }
+  }
+  return nullptr;
+}
+
+const v8::HeapGraphNode* GetPublicChildByEdgeName(v8::Isolate* isolate,
+                                                  const v8::HeapGraphNode* node,
+                                                  const char* name) {
+  const v8::HeapGraphEdge* edge =
+      GetPublicEdgeByName(isolate, node, v8::HeapGraphEdge::kInternal, name);
+  return edge ? edge->GetToNode() : nullptr;
+}
+
+const v8::HeapGraphNode* GetPublicNativeContext(
+    v8::Isolate* isolate, const v8::HeapSnapshot* snapshot) {
+  for (int i = 0; i < snapshot->GetNodesCount(); ++i) {
+    const v8::HeapGraphNode* node = snapshot->GetNode(i);
+    if (ToString(isolate, node->GetName())
+            .starts_with("system / NativeContext")) {
+      return node;
+    }
+  }
+  return nullptr;
+}
+
+const v8::HeapGraphNode* GetPublicGlobalObject(
+    v8::Isolate* isolate, const v8::HeapSnapshot* snapshot) {
+  const v8::HeapGraphNode* native_context =
+      GetPublicNativeContext(isolate, snapshot);
+  if (native_context == nullptr) return nullptr;
+  return GetPublicChildByEdgeName(isolate, native_context, "global_object");
+}
+
+}  // namespace
+
 TEST_F(HeapSnapshotTest, Empty) {
   Json::Value root = TakeHeapSnapshotJson();
 
   Json::Value meta = root["snapshot"]["meta"];
   CHECK_EQ(meta["node_fields"].size(), meta["node_types"].size());
   CHECK_EQ(meta["edge_fields"].size(), meta["edge_types"].size());
+  CHECK_EQ(meta["value_fields"].size(), meta["value_types"].size());
+  CHECK(root["values"].isArray());
+}
+
+TEST_F(HeapSnapshotTest, ValueTargetsUseValueTable) {
+  Json::Value root = TakeHeapSnapshotJson();
+  Json::Value meta = root["snapshot"]["meta"];
+
+  const int edge_type_offset = FindJsonStringIndex(meta["edge_fields"], "type");
+  const int edge_target_offset =
+      FindJsonStringIndex(meta["edge_fields"], "to_node");
+  const int value_type_offset =
+      FindJsonStringIndex(meta["value_fields"], "type");
+  const int value_value_offset =
+      FindJsonStringIndex(meta["value_fields"], "value");
+  const int value_fields_count = meta["value_fields"].size();
+
+  ASSERT_GE(edge_type_offset, 0);
+  ASSERT_GE(edge_target_offset, 0);
+  ASSERT_GE(value_type_offset, 0);
+  ASSERT_GE(value_value_offset, 0);
+  ASSERT_GT(value_fields_count, 0);
+  ASSERT_GT(root["values"].size(), 0u);
+
+  EXPECT_EQ(-1,
+            FindJsonStringIndex(meta["edge_types"][edge_type_offset], "value"));
+
+  EXPECT_EQ("string", meta["value_types"][value_value_offset].asString());
+  EXPECT_GE(FindJsonStringIndex(meta["value_types"][value_type_offset], "int"),
+            0);
+  EXPECT_GE(FindJsonStringIndex(meta["value_types"][value_type_offset], "bool"),
+            0);
+  EXPECT_GE(
+      FindJsonStringIndex(meta["value_types"][value_type_offset], "double"), 0);
+  EXPECT_GE(
+      FindJsonStringIndex(meta["value_types"][value_type_offset], "string"), 0);
+
+  const Json::Value edges = root["edges"];
+  const int edge_fields_count = meta["edge_fields"].size();
+  const int serialized_nodes_length = root["nodes"].size();
+  for (Json::ArrayIndex i = 0; i < edges.size(); i += edge_fields_count) {
+    const int target_index = edges[i + edge_target_offset].asInt();
+    if (target_index < serialized_nodes_length) continue;
+    const int value_index = target_index - serialized_nodes_length;
+    EXPECT_EQ(0, value_index % value_fields_count);
+    EXPECT_LT(value_index, static_cast<int>(root["values"].size()));
+    EXPECT_TRUE(root["values"][value_index + value_value_offset].isString());
+    return;
+  }
+  FAIL() << "Expected at least one value target";
+}
+
+TEST_F(HeapSnapshotTest, SmiTargetsUseValueTable) {
+  RunJS("globalThis.smi = 1;");
+
+  Json::Value root = TakeHeapSnapshotJson();
+  Json::Value meta = root["snapshot"]["meta"];
+
+  const int edge_target_offset =
+      FindJsonStringIndex(meta["edge_fields"], "to_node");
+  const int value_type_offset =
+      FindJsonStringIndex(meta["value_fields"], "type");
+  const int value_value_offset =
+      FindJsonStringIndex(meta["value_fields"], "value");
+  const int value_fields_count = meta["value_fields"].size();
+
+  ASSERT_GE(edge_target_offset, 0);
+  ASSERT_GE(value_type_offset, 0);
+  ASSERT_GE(value_value_offset, 0);
+  ASSERT_GT(value_fields_count, 0);
+  ASSERT_GT(root["values"].size(), 0u);
+
+  EXPECT_EQ("string", meta["value_types"][value_value_offset].asString());
+  const int smi_value_type =
+      FindJsonStringIndex(meta["value_types"][value_type_offset], "smi");
+  ASSERT_GE(smi_value_type, 0);
+
+  const Json::Value edges = root["edges"];
+  const int edge_fields_count = meta["edge_fields"].size();
+  const int serialized_nodes_length = root["nodes"].size();
+  for (Json::ArrayIndex i = 0; i < edges.size(); i += edge_fields_count) {
+    const int target_index = edges[i + edge_target_offset].asInt();
+    if (target_index < serialized_nodes_length) continue;
+    const int value_index = target_index - serialized_nodes_length;
+    EXPECT_EQ(0, value_index % value_fields_count);
+    EXPECT_LT(value_index, static_cast<int>(root["values"].size()));
+    if (root["values"][value_index + value_type_offset].asInt() !=
+        smi_value_type) {
+      continue;
+    }
+    if (root["values"][value_index + value_value_offset].asString() == "1") {
+      return;
+    }
+  }
+  FAIL() << "Expected Smi value 1 as a value table entry";
+}
+
+TEST_F(HeapSnapshotTest, HeapNumberValueUsesDoubleValueTableEntry) {
+  RunJS("globalThis.heap_number = 1.25;");
+
+  Json::Value root = TakeHeapSnapshotJson();
+  Json::Value meta = root["snapshot"]["meta"];
+
+  const int value_type_offset =
+      FindJsonStringIndex(meta["value_fields"], "type");
+  const int value_value_offset =
+      FindJsonStringIndex(meta["value_fields"], "value");
+  const int value_fields_count = meta["value_fields"].size();
+
+  ASSERT_GE(value_type_offset, 0);
+  ASSERT_GE(value_value_offset, 0);
+  ASSERT_GT(value_fields_count, 0);
+
+  const int double_value_type =
+      FindJsonStringIndex(meta["value_types"][value_type_offset], "double");
+  ASSERT_GE(double_value_type, 0);
+
+  const Json::Value values = root["values"];
+  for (Json::ArrayIndex i = 0; i < values.size(); i += value_fields_count) {
+    if (values[i + value_type_offset].asInt() == double_value_type &&
+        values[i + value_value_offset].asString() == "1.25") {
+      return;
+    }
+  }
+  FAIL() << "Expected heap number value 1.25 as a double value table entry";
+}
+
+TEST_F(HeapSnapshotTest, PrimitiveValueApi) {
+  v8::HandleScope scope(v8_isolate());
+  const uint16_t two_byte_chars[] = {'a', 'b', 'c', 0x1234};
+  v8::Local<v8::String> two_byte =
+      v8::String::NewFromTwoByte(v8_isolate(), two_byte_chars,
+                                 v8::NewStringType::kNormal,
+                                 arraysize(two_byte_chars))
+          .ToLocalChecked();
+  v8_context()
+      ->Global()
+      ->Set(v8_context(), NewString("two_byte"), two_byte)
+      .FromJust();
+  RunJS("globalThis.obj = {};");
+
+  const v8::HeapSnapshot* snapshot =
+      v8_isolate()->GetHeapProfiler()->TakeHeapSnapshot();
+  const v8::HeapGraphNode* global =
+      GetPublicGlobalObject(v8_isolate(), snapshot);
+  ASSERT_NE(nullptr, global);
+
+  const v8::HeapGraphEdge* two_byte_edge = GetPublicEdgeByName(
+      v8_isolate(), global, v8::HeapGraphEdge::kProperty, "two_byte");
+  ASSERT_NE(nullptr, two_byte_edge);
+  const v8::HeapGraphNode* two_byte_node = two_byte_edge->GetToNode();
+  ASSERT_NE(nullptr, two_byte_node);
+
+  const v8::HeapGraphEdge* length_edge = GetPublicEdgeByName(
+      v8_isolate(), two_byte_node, v8::HeapGraphEdge::kInternal, "length");
+  ASSERT_NE(nullptr, length_edge);
+  EXPECT_EQ(nullptr, length_edge->GetToNode());
+  const v8::HeapSnapshotValue* length_value = length_edge->GetValue();
+  ASSERT_NE(nullptr, length_value);
+  EXPECT_EQ(v8::HeapSnapshotValue::kInt, length_value->GetType());
+  EXPECT_EQ(4, length_value->GetInt());
+
+  const v8::HeapGraphEdge* two_byte_representation_edge = GetPublicEdgeByName(
+      v8_isolate(), two_byte_node, v8::HeapGraphEdge::kInternal,
+      "two_byte_representation");
+  ASSERT_NE(nullptr, two_byte_representation_edge);
+  EXPECT_EQ(nullptr, two_byte_representation_edge->GetToNode());
+  const v8::HeapSnapshotValue* two_byte_representation_value =
+      two_byte_representation_edge->GetValue();
+  ASSERT_NE(nullptr, two_byte_representation_value);
+  EXPECT_EQ(v8::HeapSnapshotValue::kBool,
+            two_byte_representation_value->GetType());
+  EXPECT_TRUE(two_byte_representation_value->GetBool());
+
+  const v8::HeapGraphEdge* obj_edge = GetPublicEdgeByName(
+      v8_isolate(), global, v8::HeapGraphEdge::kProperty, "obj");
+  ASSERT_NE(nullptr, obj_edge);
+  const v8::HeapGraphNode* obj = obj_edge->GetToNode();
+  ASSERT_NE(nullptr, obj);
+
+  const v8::HeapGraphEdge* map_edge = GetPublicEdgeByName(
+      v8_isolate(), obj, v8::HeapGraphEdge::kInternal, "map");
+  ASSERT_NE(nullptr, map_edge);
+  EXPECT_EQ(nullptr, map_edge->GetValue());
+  const v8::HeapGraphNode* map = map_edge->GetToNode();
+  ASSERT_NE(nullptr, map);
+
+  const v8::HeapGraphEdge* instance_type_name_edge = GetPublicEdgeByName(
+      v8_isolate(), map, v8::HeapGraphEdge::kInternal, "instance_type_name");
+  ASSERT_NE(nullptr, instance_type_name_edge);
+  EXPECT_EQ(nullptr, instance_type_name_edge->GetToNode());
+  const v8::HeapSnapshotValue* instance_type_name_value =
+      instance_type_name_edge->GetValue();
+  ASSERT_NE(nullptr, instance_type_name_value);
+  EXPECT_EQ(v8::HeapSnapshotValue::kString,
+            instance_type_name_value->GetType());
+  EXPECT_EQ("JS_OBJECT_TYPE",
+            ToString(v8_isolate(), instance_type_name_value->GetString()));
 }
 
 TEST_F(HeapSnapshotTest, StringTableRootsAreWeak) {
@@ -197,7 +461,10 @@ TEST_F(HeapSnapshotTest, ScopeInfoProperties) {
     const HeapGraphEdge* scope_type_name_edge =
         GetNamedEdge(*scope_info, "scope_type_name");
     ASSERT_NE(nullptr, scope_type_name_edge);
-    EXPECT_STREQ("FUNCTION_SCOPE", scope_type_name_edge->to()->name());
+    std::optional<std::string_view> scope_type_name =
+        GetStringEdge(scope_info, "scope_type_name");
+    ASSERT_TRUE(scope_type_name.has_value());
+    EXPECT_EQ("FUNCTION_SCOPE", scope_type_name.value());
 
     std::optional<int> parameter_count =
         GetIntEdge(scope_info, "parameter_count");
@@ -248,7 +515,10 @@ TEST_F(HeapSnapshotTest, ScopeInfoProperties) {
     const HeapGraphEdge* scope_type_name_edge =
         GetNamedEdge(*scope_info, "scope_type_name");
     ASSERT_NE(nullptr, scope_type_name_edge);
-    EXPECT_STREQ("FUNCTION_SCOPE", scope_type_name_edge->to()->name());
+    std::optional<std::string_view> scope_type_name =
+        GetStringEdge(scope_info, "scope_type_name");
+    ASSERT_TRUE(scope_type_name.has_value());
+    EXPECT_EQ("FUNCTION_SCOPE", scope_type_name.value());
 
     std::optional<int> parameter_count =
         GetIntEdge(scope_info, "parameter_count");

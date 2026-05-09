@@ -23,6 +23,7 @@ namespace v8 {
 
 enum class EmbedderStateTag : uint8_t;
 class HeapGraphNode;
+class HeapSnapshotValue;
 struct HeapStatsUpdate;
 class Object;
 enum StateTag : uint16_t;
@@ -162,13 +163,13 @@ class V8_EXPORT CpuProfileNode {
   bool GetLineTicks(LineTick* entries, unsigned int length) const;
 
   /** Returns bailout reason for the function
-    * if the optimization was disabled for it.
-    */
+   * if the optimization was disabled for it.
+   */
   const char* GetBailoutReason() const;
 
   /**
-    * Returns the count of samples where the function was currently executing.
-    */
+   * Returns the count of samples where the function was currently executing.
+   */
   unsigned GetHitCount() const;
 
   /** Returns id of the node. The id is unique within the tree */
@@ -578,9 +579,9 @@ class V8_EXPORT HeapGraphEdge {
                            // (e.g. parts of a ConsString).
     kHidden = 4,           // A link that is needed for proper sizes
                            // calculation, but may be hidden from user.
-    kShortcut = 5,         // A link that must not be followed during
-                           // sizes calculation.
-    kWeak = 6              // A weak reference (ignored by the GC).
+    kShortcut = 5,         // A link that must not be followed during sizes
+                           // calculation.
+    kWeak = 6,             // A weak reference (ignored by the GC).
   };
 
   /** Returns edge type (see HeapGraphEdge::Type). */
@@ -595,10 +596,45 @@ class V8_EXPORT HeapGraphEdge {
   /** Returns origin node. */
   const HeapGraphNode* GetFromNode() const;
 
-  /** Returns destination node. */
+  /** Returns destination node. Returns nullptr for primitive value edges. */
   const HeapGraphNode* GetToNode() const;
+
+  /** Returns destination value. Returns nullptr for heap graph node edges. */
+  const HeapSnapshotValue* GetValue() const;
 };
 
+/**
+ * HeapSnapshotValue represents a primitive value referenced by a heap
+ * graph edge.
+ */
+class V8_EXPORT HeapSnapshotValue {
+ public:
+  enum Type {
+    kInt = 0,
+    kBool = 1,
+    kDouble = 2,
+    kString = 3,
+    kSmi = 4,
+  };
+
+  /** Returns value type (see HeapSnapshotValue::Type). */
+  Type GetType() const;
+
+  /** Returns the value for kInt values. */
+  int GetInt() const;
+
+  /** Returns the value for kBool values. */
+  bool GetBool() const;
+
+  /** Returns the value for kDouble values. */
+  double GetDouble() const;
+
+  /** Returns the value for kString values. */
+  Local<String> GetString() const;
+
+  /** Returns the value for kSmi values. */
+  int GetSmi() const;
+};
 
 /**
  * HeapGraphNode represents a node in a heap graph.
@@ -712,17 +748,13 @@ class V8_EXPORT HeapSnapshot {
                  SerializationFormat format = kJSON) const;
 };
 
-
 /**
  * An interface for reporting progress and controlling long-running
  * activities.
  */
 class V8_EXPORT ActivityControl {
  public:
-  enum ControlOption {
-    kContinue = 0,
-    kAbort = 1
-  };
+  enum ControlOption { kContinue = 0, kAbort = 1 };
   virtual ~ActivityControl() = default;
   /**
    * Notify about current progress. The activity can be stopped by
@@ -1298,10 +1330,10 @@ class V8_EXPORT HeapProfiler {
  */
 struct HeapStatsUpdate {
   HeapStatsUpdate(uint32_t index, uint32_t count, uint32_t size)
-    : index(index), count(count), size(size) { }
+      : index(index), count(count), size(size) {}
   uint32_t index;  // Index of the time interval that was changed.
   uint32_t count;  // New value of count field for the interval with this index.
-  uint32_t size;  // New value of size field for the interval with this index.
+  uint32_t size;   // New value of size field for the interval with this index.
 };
 
 #define CODE_EVENTS_LIST(V)                          \
@@ -1396,6 +1428,5 @@ class V8_EXPORT CodeEventHandler {
 };
 
 }  // namespace v8
-
 
 #endif  // V8_V8_PROFILER_H_

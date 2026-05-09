@@ -6,6 +6,7 @@
 #define V8_UNITTESTS_PROFILER_HEAP_SNAPSHOT_UTILS_H_
 
 #include <optional>
+#include <string_view>
 #include <type_traits>
 
 #include "include/cppgc/type-traits.h"
@@ -26,6 +27,8 @@ const HeapEntry* GetEntryByName(HeapSnapshot* snapshot, const char* name);
 bool HasNamedEdge(const HeapEntry& entry, const char* name);
 std::optional<int> GetIntEdge(const HeapEntry* node, const char* name);
 std::optional<bool> GetBoolEdge(const HeapEntry* node, const char* name);
+std::optional<std::string_view> GetStringEdge(const HeapEntry* node,
+                                              const char* name);
 
 const HeapEntry* GetEntryFor(Isolate* isolate, HeapSnapshot* snapshot,
                              Tagged<HeapObject> object);

@@ -71,7 +71,7 @@ class HeapProfiler : public HeapObjectAllocationTracker {
 
   // Returns the default heap snapshot options for snapshots intended for V8
   // devs.
-  static v8::HeapProfiler::HeapSnapshotOptions
+  V8_EXPORT_PRIVATE static v8::HeapProfiler::HeapSnapshotOptions
   GetDefaultHeapSnapshotOptionsForTestingUsage();
 
   // Just takes a snapshot performing GC as part of the snapshot.

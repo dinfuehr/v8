@@ -209,6 +209,7 @@ bool IsValidSnapshot(const v8::HeapSnapshot* snapshot, int depth = 3) {
       reinterpret_cast<const HeapSnapshot*>(snapshot);
   std::unordered_set<const HeapEntry*> visited;
   for (const HeapGraphEdge& edge : heap_snapshot->edges()) {
+    if (edge.is_value()) continue;
     visited.insert(edge.to());
   }
   size_t unretained_entries_count = 0;
@@ -246,7 +247,9 @@ bool ContainsRetainingPath(const v8::HeapSnapshot& snapshot,
     std::vector<HeapEntry*> new_haystack;
     for (HeapEntry* parent : haystack) {
       for (int j = 0; j < parent->children_count(); j++) {
-        HeapEntry* child = parent->child(j)->to();
+        HeapGraphEdge* edge = parent->child(j);
+        if (edge->is_value()) continue;
+        HeapEntry* child = edge->to();
         if (0 == strcmp(child->name(), needle.c_str())) {
           new_haystack.push_back(child);
         }
