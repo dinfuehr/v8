@@ -220,18 +220,23 @@ class CppGraphBuilderImpl final {
     // Don't merge nodes if edges have a name.
     if (!edge_name.empty()) return;
 
-    // Try to extract the back reference.
+    // Try to extract the back reference. If the back reference matches
+    // `parent`, then the nodes are merged.
     void* back_reference_object = ExtractEmbedderDataBackref(
         reinterpret_cast<v8::internal::Isolate*>(cpp_heap_.isolate()),
         cpp_heap_, v8_data);
     if (!back_reference_object) return;
+    // Only JS objects have back references.
+    DCHECK(v8_data->IsValue() && v8_data.As<v8::Value>()->IsObject());
 
     auto& back_header = HeapObjectHeader::FromObject(back_reference_object);
 
-    // Compare with parent header (if not root).
+    // If the back reference doesn't point to the same header, just return. In
+    // such a case we have stand-alone references to a wrapper.
     if (parent.IsRoot() || parent.node()->GetAddress() != &back_header) return;
 
-    // Merge nodes!
+    // Back reference points to parents header. In this case, the nodes should
+    // be merged and query the detachedness state of the embedder.
     auto it = nodes_.find(&back_header);
     CHECK(it != nodes_.end());
     EmbedderNode* back_node = it->second;
