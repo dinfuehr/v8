@@ -16,6 +16,8 @@
 #include "src/debug/debug.h"
 #include "src/handles/global-handles.h"
 #include "src/heap/combined-heap.h"
+#include "src/heap/cppgc-js/cpp-heap.h"
+#include "src/heap/cppgc-js/cpp-snapshot.h"
 #include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/safepoint.h"
@@ -3419,8 +3421,12 @@ bool NativeObjectsExplorer::IterateAndExtractReferences(
     v8::HandleScope scope(reinterpret_cast<v8::Isolate*>(isolate_));
     DisallowGarbageCollection no_gc;
     EmbedderGraphImpl graph;
-    snapshot_->profiler()->BuildEmbedderGraph(
-        isolate_, &graph, generator_->TakeCppHeapWrappers());
+    if (isolate_->heap()->cpp_heap()) {
+      CppGraphBuilder::Run(
+          v8::internal::CppHeap::From(isolate_->heap()->cpp_heap()), &graph,
+          generator_->TakeCppHeapWrappers());
+    }
+    snapshot_->profiler()->BuildEmbedderGraph(isolate_, &graph);
     for (const auto& node : graph.nodes()) {
       // Only add embedder nodes as V8 nodes have been added already by the
       // V8HeapExplorer.

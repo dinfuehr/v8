@@ -118,8 +118,7 @@ class HeapProfiler : public HeapObjectAllocationTracker {
       v8::HeapProfiler::BuildEmbedderGraphCallback callback, void* data);
   void RemoveBuildEmbedderGraphCallback(
       v8::HeapProfiler::BuildEmbedderGraphCallback callback, void* data);
-  void BuildEmbedderGraph(Isolate* isolate, v8::EmbedderGraph* graph,
-                          CppHeapWrapperSet&& cpp_heap_wrappers);
+  void BuildEmbedderGraph(Isolate* isolate, v8::EmbedderGraph* graph);
   bool HasBuildEmbedderGraphCallback() const {
     return heap()->cpp_heap() != nullptr ||
            !build_embedder_graph_callbacks_.empty();
