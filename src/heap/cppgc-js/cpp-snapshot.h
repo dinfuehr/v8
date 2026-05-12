@@ -10,16 +10,17 @@
 
 namespace v8 {
 
-class Isolate;
 class EmbedderGraph;
 
 namespace internal {
+
+class CppHeap;
 
 class V8_EXPORT_PRIVATE CppGraphBuilder final {
  public:
   // Add the C++ snapshot to the existing |graph|. See CppGraphBuilderImpl for
   // algorithm internals.
-  static void Run(v8::Isolate* isolate, v8::EmbedderGraph* graph, void* data,
+  static void Run(v8::internal::CppHeap* cpp_heap, v8::EmbedderGraph* graph,
                   CppHeapWrapperSet&& cpp_heap_wrappers);
 
   CppGraphBuilder() = delete;

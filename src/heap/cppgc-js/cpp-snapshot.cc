@@ -626,9 +626,9 @@ void CppGraphBuilderImpl::Run() {
 }
 
 // static
-void CppGraphBuilder::Run(v8::Isolate* isolate, v8::EmbedderGraph* graph,
-                          void* data, CppHeapWrapperSet&& cpp_heap_wrappers) {
-  CppHeap* cpp_heap = static_cast<CppHeap*>(data);
+void CppGraphBuilder::Run(v8::internal::CppHeap* cpp_heap,
+                          v8::EmbedderGraph* graph,
+                          CppHeapWrapperSet&& cpp_heap_wrappers) {
   CHECK_NOT_NULL(cpp_heap);
   CHECK_NOT_NULL(graph);
   CppGraphBuilderImpl graph_builder(*cpp_heap, *graph,

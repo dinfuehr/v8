@@ -13,6 +13,8 @@
 #include "src/base/platform/platform.h"
 #include "src/debug/debug.h"
 #include "src/heap/combined-heap.h"
+#include "src/heap/cppgc-js/cpp-heap.h"
+#include "src/heap/cppgc-js/cpp-snapshot.h"
 #include "src/heap/heap-inl.h"
 #include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap.h"
@@ -99,20 +101,13 @@ void HeapProfiler::RemoveBuildEmbedderGraphCallback(
 void HeapProfiler::BuildEmbedderGraph(Isolate* isolate,
                                       v8::EmbedderGraph* graph,
                                       CppHeapWrapperSet&& cpp_heap_wrappers) {
-  if (internal_build_embedder_graph_callback_.first) {
-    internal_build_embedder_graph_callback_.first(
-        reinterpret_cast<v8::Isolate*>(isolate), graph,
-        internal_build_embedder_graph_callback_.second,
-        std::move(cpp_heap_wrappers));
+  if (heap()->cpp_heap()) {
+    CppGraphBuilder::Run(v8::internal::CppHeap::From(heap()->cpp_heap()), graph,
+                         std::move(cpp_heap_wrappers));
   }
   for (const auto& cb : build_embedder_graph_callbacks_) {
     cb.first(reinterpret_cast<v8::Isolate*>(isolate), graph, cb.second);
   }
-}
-
-void HeapProfiler::SetInternalBuildEmbedderGraphCallback(
-    InternalBuildEmbedderGraphCallback callback, void* data) {
-  internal_build_embedder_graph_callback_ = {callback, data};
 }
 
 void HeapProfiler::SetGetDetachednessCallback(
