@@ -1339,6 +1339,15 @@ void Heap::CollectAllAvailableGarbage(GarbageCollectionReason gc_reason) {
     gc_flags |= GCFlag::kForced;
   }
 
+  const bool take_snapshot_on_low_memory =
+      gc_reason == GarbageCollectionReason::kLowMemoryNotification &&
+      v8_flags.heap_snapshot_on_low_memory_notification &&
+      !isolate()->has_active_deserializer();
+
+  if (take_snapshot_on_low_memory) {
+    heap_profiler()->WriteSnapshotToDiskAfterGC();
+  }
+
   const auto perform_heap_limit_check = v8_flags.late_heap_limit_check
                                             ? PerformHeapLimitCheck{false}
                                             : PerformHeapLimitCheck{true};
@@ -1349,6 +1358,10 @@ void Heap::CollectAllAvailableGarbage(GarbageCollectionReason gc_reason) {
                    perform_heap_limit_check,
                    PerformIneffectiveMarkCompactCheck{false});
     DCHECK_EQ(GCFlags(GCFlag::kNoFlags), current_gc_flags_);
+
+    if (take_snapshot_on_low_memory) {
+      heap_profiler()->WriteSnapshotToDiskAfterGC();
+    }
 
     // As long as we are at or above the heap limit, we need another GC to
     // survive CheckHeapLimitReached() after the loop.

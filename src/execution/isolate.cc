@@ -6942,6 +6942,7 @@ bool Isolate::NeedsSourcePositions() const {
       v8_flags.print_maglev_code || v8_flags.perf_prof || v8_flags.log_maps ||
       v8_flags.log_ic || v8_flags.log_function_events ||
       v8_flags.heap_snapshot_on_oom ||
+      v8_flags.heap_snapshot_on_low_memory_notification ||
       // Dynamic conditions; changing any of these conditions triggers source
       // position collection for the entire heap
       // (CollectSourcePositionsForAllBytecodeArrays).
