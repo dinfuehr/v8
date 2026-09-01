@@ -747,14 +747,19 @@ void Parser::ParseProgram(Isolate* isolate, DirectHandle<Script> script,
   scanner_.Initialize();
   FunctionLiteral* result =
       DoParseProgram(isolate, info, script->eval_from_position());
-  HandleDebugMagicComments(isolate, script);
+  if (!flags().is_scope_analysis_only()) {
+    HandleDebugMagicComments(isolate, script);
+  }
   if (result == nullptr) return;
   result->scope()->set_is_hoisted_in_context(
       info->flags().is_hoisted_in_context());
-  MaybeProcessSourceRanges(info, result, stack_limit_);
+  if (!flags().is_scope_analysis_only()) {
+    MaybeProcessSourceRanges(info, result, stack_limit_);
+  }
   PostProcessParseResult(isolate, info, result);
 
-  if (V8_UNLIKELY(v8_flags.log_function_events)) {
+  if (V8_UNLIKELY(v8_flags.log_function_events) &&
+      !flags().is_scope_analysis_only()) {
     double ms = timer.Elapsed().InMillisecondsF();
     const char* event_name = "parse-eval";
     int start = -1;
@@ -900,7 +905,9 @@ void Parser::PostProcessParseResult(IsolateT* isolate, ParseInfo* info,
     info->set_allow_eval_cache(allow_eval_cache());
   }
 
-  info->ast_value_factory()->Internalize(isolate);
+  if (!flags().is_scope_analysis_only()) {
+    info->ast_value_factory()->Internalize(isolate);
+  }
 
   {
     RCS_SCOPE(info->runtime_call_stats(), RuntimeCallCounterId::kCompileAnalyse,

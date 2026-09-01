@@ -25,7 +25,7 @@ namespace {
 void MaybeReportStatistics(ParseInfo* info, DirectHandle<Script> script,
                            Isolate* isolate, Parser* parser,
                            ReportStatisticsMode mode) {
-  if (mode) {
+  if (mode && !info->flags().is_scope_analysis_only()) {
     parser->UpdateStatistics(isolate, script);
   }
 }
