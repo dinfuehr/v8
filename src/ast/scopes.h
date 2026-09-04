@@ -401,6 +401,7 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     flags_ = IsBlockScopeForObjectLiteralField::update(flags_, true);
   }
 
+  bool calls_eval() const { return CallsEvalField::decode(flags_); }
   bool inner_scope_calls_eval() const {
     return InnerScopeCallsEvalField::decode(flags_);
   }
@@ -712,7 +713,6 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     flags_ = IsStrictField::update(flags_, is_strict(language_mode));
   }
 
-  bool calls_eval() const { return CallsEvalField::decode(flags_); }
   void set_calls_eval(bool value) {
     flags_ = CallsEvalField::update(flags_, value);
   }
