@@ -855,12 +855,14 @@ FunctionLiteral* Parser::DoParseProgram(Isolate* isolate, ParseInfo* info,
     }
     // Internalize the ast strings in the case of eval so we can check for
     // conflicting var declarations with outer scope-info-backed scopes.
-    if (flags().is_eval()) {
-      DCHECK(parsing_on_main_thread_);
-      DCHECK(!isolate->main_thread_local_heap()->IsParked());
-      info->ast_value_factory()->Internalize(isolate);
+    if (!flags().is_scope_analysis_only()) {
+      if (flags().is_eval()) {
+        DCHECK(parsing_on_main_thread_);
+        DCHECK(!isolate->main_thread_local_heap()->IsParked());
+        info->ast_value_factory()->Internalize(isolate);
+      }
+      CheckConflictingVarDeclarations(scope);
     }
-    CheckConflictingVarDeclarations(scope);
 
     // For sloppy eval though, we clear dynamic variables created for toplevel
     // var to avoid resolving to a variable when the variable and proxy are in

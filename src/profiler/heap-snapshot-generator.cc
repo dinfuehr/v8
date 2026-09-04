@@ -2162,18 +2162,11 @@ void V8HeapExplorer::ParseScriptScopes(HeapEntry* entry,
   flags.set_post_parallel_compile_tasks_for_lazy(false);
   flags.set_is_scope_analysis_only(true);
 
-  MaybeDirectHandle<ScopeInfo> maybe_outer_scope;
-  if (script->compilation_type() == Script::CompilationType::kEval &&
-      Is<ScopeInfo>(script->eval_from_scope_info())) {
-    maybe_outer_scope = direct_handle(
-        Cast<ScopeInfo>(script->eval_from_scope_info()), isolate());
-  }
-
   UnoptimizedCompileState compile_state;
   ReusableUnoptimizedCompileState reusable_state(isolate());
   ParseInfo info(isolate(), flags, &compile_state, &reusable_state);
 
-  if (parsing::ParseProgram(&info, script_handle, maybe_outer_scope, isolate(),
+  if (parsing::ParseProgram(&info, script_handle, isolate(),
                             parsing::ReportStatisticsMode{false})) {
     if (info.literal() != nullptr && info.literal()->scope() != nullptr) {
       CollectScopeTree(info.literal()->scope(), 0, entry, names_, snapshot_);

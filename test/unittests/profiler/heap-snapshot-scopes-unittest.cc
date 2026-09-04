@@ -895,4 +895,87 @@ TEST_F(HeapSnapshotScopesTest, ModuleScope) {
   CheckContextSlots(inner_fn);
 }
 
+TEST_F(HeapSnapshotScopesTest, EvalScript) {
+  DirectHandle<JSFunction> inner_fn = RunJSForClosure(
+      "eval(\n"
+      "    'function evalOuter() {\\n' +\n"
+      "    '  let evalVar = 1;\\n' +\n"
+      "    '  let unused = 2;\\n' +\n"
+      "    '  return function evalInner() {\\n' +\n"
+      "    '    return evalVar;\\n' +\n"
+      "    '  };\\n' +\n"
+      "    '}\\n' +\n"
+      "    'evalOuter();\\n');\n");
+
+  TakeHeapSnapshot();
+
+  const SnapshotSourceScopeData* inner_scope = GetScopeForClosure(*inner_fn);
+  ASSERT_NE(nullptr, inner_scope);
+
+  const SnapshotSourceScopeData* outer_scope = inner_scope->parent;
+  ASSERT_NE(nullptr, outer_scope);
+
+  const SnapshotSourceScopeData* eval_scope = outer_scope->parent;
+  ASSERT_NE(nullptr, eval_scope);
+  EXPECT_EQ(-2, eval_scope->scope_id);
+  EXPECT_EQ(0, eval_scope->depth);
+  EXPECT_EQ(nullptr, eval_scope->parent);
+
+  const VariableDefinition* eval_var = outer_scope->FindVariable("evalVar");
+  ASSERT_NE(nullptr, eval_var);
+  EXPECT_EQ(0, eval_var->slot_index);
+  AssertUses(eval_var, {inner_scope});
+  EXPECT_EQ(nullptr, outer_scope->FindVariable("unused"));
+
+  CheckContextSlots(inner_fn);
+}
+
+TEST_F(HeapSnapshotScopesTest, EvalScriptWithEnclosingScope) {
+  DirectHandle<JSFunction> inner_fn = RunJSForClosure(
+      "function outer() {\n"
+      "  let outerVar = 1;\n"
+      "  return eval(\n"
+      "      'let evalVar = 2;\\n' +\n"
+      "      'function inner() {\\n' +\n"
+      "      '  return outerVar + evalVar;\\n' +\n"
+      "      '}\\n' +\n"
+      "      'inner;\\n');\n"
+      "}\n"
+      "outer();\n");
+
+  TakeHeapSnapshot();
+
+  const SnapshotSourceScopeData* inner_scope = GetScopeForClosure(*inner_fn);
+  ASSERT_NE(nullptr, inner_scope);
+
+  const SnapshotSourceScopeData* eval_scope = inner_scope->parent;
+  ASSERT_NE(nullptr, eval_scope);
+  EXPECT_EQ(-2, eval_scope->scope_id);
+  EXPECT_EQ(0, eval_scope->depth);
+  EXPECT_EQ(nullptr, eval_scope->parent);
+
+  const VariableDefinition* eval_var = eval_scope->FindVariable("evalVar");
+  ASSERT_NE(nullptr, eval_var);
+  EXPECT_EQ(0, eval_var->slot_index);
+  AssertUses(eval_var, {inner_scope});
+
+  DirectHandle<JSFunction> outer_fn = RunJSForClosure("outer");
+  const SnapshotSourceScopeData* outer_scope = GetScopeForClosure(*outer_fn);
+  ASSERT_NE(nullptr, outer_scope);
+
+  const VariableDefinition* outer_var = outer_scope->FindVariable("outerVar");
+  ASSERT_NE(nullptr, outer_var);
+
+  // Since eval scripts are parsed self-contained during heap snapshot
+  // generation without deserializing the outer ScopeInfo chain, inner only
+  // resolves uses of variables declared within the eval script (evalVar).
+  // References to outerVar are unresolved / treated as dynamic globals.
+  std::vector<std::pair<int, int>> expected_uses = {
+      {eval_scope->scope_id, eval_var->slot_index},
+  };
+  EXPECT_EQ(inner_scope->uses, expected_uses);
+
+  CheckContextSlots(outer_fn);
+}
+
 }  // namespace v8::internal
